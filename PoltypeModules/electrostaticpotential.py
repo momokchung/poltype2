@@ -62,6 +62,8 @@ def gen_esp_grid(poltype,mol,gridnamelist,espnamelist,fchknamelist,cubenamelist)
     use_gaus=CheckIfLogFileUsingGaussian(poltype,poltype.logespfname)
     if use_gaus==False:
         for i in range(len(gridnamelist)):
+            if gridnamelist[i] is None: # dropped ESP conformer
+                continue
             gridname=gridnamelist[i]
             espname=espnamelist[i]
             fchkname=fchknamelist[i]
@@ -82,6 +84,8 @@ def gen_esp_grid(poltype,mol,gridnamelist,espnamelist,fchknamelist,cubenamelist)
             potnamelist.append(potfile)
 
     for i in range(len(gridnamelist)):
+        if gridnamelist[i] is None: # dropped ESP conformer
+            continue
         gridname=gridnamelist[i]
         espname=espnamelist[i]
         fchkname=fchknamelist[i]
@@ -133,7 +137,7 @@ def GrabGridData(poltype,gridname,espname):
 
 
       
-def CreatePsi4ESPInputFile(poltype,comfilecoords,comfilename,mol,maxdisk,maxmem,numproc,charge,makecube=None):
+def CreatePsi4ESPInputFile(poltype,comfilecoords,comfilename,mol,maxdisk,maxmem,numproc,charge,makecube=None,reusedmawfn=False):
     """
     Intent:
     Input:
@@ -146,7 +150,7 @@ def CreatePsi4ESPInputFile(poltype,comfilecoords,comfilename,mol,maxdisk,maxmem,
     tempread.close()
     inputname=comfilename.replace('.com','.psi4')
     temp=open(inputname,'w')
-    if not (poltype.sameleveldmaesp and makecube):
+    if not reusedmawfn:
         temp.write('molecule { '+'\n')
         temp.write('%d %d\n' % (charge, mol.GetTotalSpinMultiplicity()))
         for lineidx in range(len(results)):
@@ -162,7 +166,7 @@ def CreatePsi4ESPInputFile(poltype,comfilecoords,comfilename,mol,maxdisk,maxmem,
     temp.write('set freeze_core True'+'\n')
     temp.write('set PROPERTIES_ORIGIN ["COM"]'+'\n')
     temp.write("set cubeprop_tasks ['esp']"+'\n')
-    if not (poltype.sameleveldmaesp and makecube):
+    if not reusedmawfn:
         opt.WritePsi4BasisBlock(poltype,temp,poltype.espbasisset,poltype.iodineespbasisset,mol.GetSpacedFormula())
         if poltype.allowradicals:
             temp.write('set reference uhf '+'\n')
@@ -513,6 +517,12 @@ def ElectrostaticPotentialFitting(poltype,xyzfnamelist,keyfnamelist,potnamelist)
     Referenced By: 
     Description: 
     """
+    numconfs=len(xyzfnamelist)
+    xyzfnamelist=[xyzfname for xyzfname in xyzfnamelist if xyzfname is not None] # dropped ESP conformers
+    if len(xyzfnamelist)!=len(potnamelist):
+        raise ValueError('Number of structures '+str(len(xyzfnamelist))+' does not match number of QM potentials '+str(len(potnamelist))+' for ESP fit')
+    if numconfs>1:
+        poltype.WriteToLog('ESP fit uses '+str(len(xyzfnamelist))+' of '+str(numconfs)+' conformer(s)')
     combinedxyz=CombineFiles(poltype,xyzfnamelist,'combined.xyz')
     combinedpot=CombineFiles(poltype,potnamelist,'combined.pot')
     optmpolecmd = poltype.potentialexe + " 6 " + combinedxyz + " -k " + poltype.key2fnamefromavg + " " + combinedpot + " N "+str(poltype.espgrad)
@@ -612,89 +622,104 @@ def SPForESP(poltype,optmolist,molist,xyzfnamelist,keyfnamelist):
     espnamelist=[] 
     fchknamelist=[]
     cubenamelist=[]
+    namelists=(gridnamelist,espnamelist,fchknamelist,cubenamelist)
     for i in range(len(optmolist)):
-        optmol=optmolist[i]
-        mol=molist[i]
-        xyzfname=xyzfnamelist[i]
-        keyfname=keyfnamelist[i]
-        if i==0:
-            suffix=''
+        if optmolist[i] is None: # extra ESP conformer dropped earlier, keep position so file suffixes stay the same
+            for namelist in namelists:
+                namelist.append(None)
+            continue
+        try:
+            optmol=optmolist[i]
+            mol=molist[i]
+            xyzfname=xyzfnamelist[i]
+            keyfname=keyfnamelist[i]
+            if i==0:
+                suffix=''
            
-        else:
-            suffix='_'+str(i+1)
-        optsuffix='_'+str(i+1)
+            else:
+                suffix='_'+str(i+1)
+            optsuffix='_'+str(i+1)
 
-        logoptfname=poltype.logoptfname.replace('_1.log',optsuffix+'.log')
-        comespfname=poltype.comespfname.replace('.com',suffix+'.com')
-        fckespfname=poltype.fckespfname.replace('.fchk',suffix+'.fchk')
-        chkespfname=poltype.chkespfname.replace('.chk',suffix+'.chk')
-        logespfname=poltype.logespfname.replace('.log',suffix+'.log')
-        cubename=poltype.qmespfname.replace('.cube',suffix+'.cube')
-        cubenamelist.append(cubename)
-        fchknamelist.append(fckespfname)
-        espgrdfname=xyzfname.replace('.xyz','.grid')
-        gridnamelist.append(espgrdfname)
-        espname=espgrdfname.replace('.grid','esp.dat')
-        espnamelist.append(espname)
-        if not os.path.isfile(espgrdfname):
-            gengridcmd = poltype.potentialexe + " 1 " + xyzfname+' -k '+keyfname
-            poltype.call_subsystem([gengridcmd],True)
-        if poltype.use_gaus==False or poltype.use_gausoptonly==True:
-            shutil.copy(espgrdfname, 'grid.dat') 
-            inputname,outputname=CreatePsi4ESPInputFile(poltype,logoptfname.replace('.log','.xyz'),comespfname,mol,poltype.maxdisk,poltype.maxmem,poltype.numproc,poltype.totalcharge,True)
-            term,error=poltype.CheckNormalTermination(outputname,errormessages=None,skiperrors=True)
-            if term==False:
-                poltype.WriteToLog("Gas Phase High Level Single Point for Multipole Refinement")
-                cmdstr=' '.join(['psi4 ',poltype.psi4_args,inputname,outputname])
-                jobtooutputlog={cmdstr:os.getcwd()+r'/'+outputname}
-                jobtolog={cmdstr:os.getcwd()+r'/'+poltype.logfname}
-                scratchdir=poltype.scrtmpdirpsi4
-                jobtologlistfilenameprefix=os.getcwd()+r'/'+'esp_jobtolog_'+poltype.molecprefix 
-                inputfilepath=os.path.join(os.getcwd(),inputname)
-                anotherinputfile=os.path.join(os.getcwd(),'grid.dat')
-                jobtoinputfilepaths={cmdstr:[inputfilepath,anotherinputfile]}
-                jobtooutputfiles={cmdstr:[outputname,fckespfname,'grid_esp.dat']}
-                jobtoabsolutebinpath={cmdstr:poltype.which('psi4')}
+            logoptfname=poltype.logoptfname.replace('_1.log',optsuffix+'.log')
+            comespfname=poltype.comespfname.replace('.com',suffix+'.com')
+            fckespfname=poltype.fckespfname.replace('.fchk',suffix+'.fchk')
+            chkespfname=poltype.chkespfname.replace('.chk',suffix+'.chk')
+            logespfname=poltype.logespfname.replace('.log',suffix+'.log')
+            cubename=poltype.qmespfname.replace('.cube',suffix+'.cube')
+            cubenamelist.append(cubename)
+            fchknamelist.append(fckespfname)
+            espgrdfname=xyzfname.replace('.xyz','.grid')
+            gridnamelist.append(espgrdfname)
+            espname=espgrdfname.replace('.grid','esp.dat')
+            espnamelist.append(espname)
+            if not os.path.isfile(espgrdfname):
+                gengridcmd = poltype.potentialexe + " 1 " + xyzfname+' -k '+keyfname
+                poltype.call_subsystem([gengridcmd],True)
+            if poltype.use_gaus==False or poltype.use_gausoptonly==True:
+                shutil.copy(espgrdfname, 'grid.dat') 
+                # the DMA job is only run for the first conformer, so only that one can reuse its wavefunction
+                inputname,outputname=CreatePsi4ESPInputFile(poltype,logoptfname.replace('.log','.xyz'),comespfname,mol,poltype.maxdisk,poltype.maxmem,poltype.numproc,poltype.totalcharge,True,reusedmawfn=(poltype.sameleveldmaesp and i==0))
+                term,error=poltype.CheckNormalTermination(outputname,errormessages=None,skiperrors=True)
+                if term==False:
+                    poltype.WriteToLog("Gas Phase High Level Single Point for Multipole Refinement")
+                    cmdstr=' '.join(['psi4 ',poltype.psi4_args,inputname,outputname])
+                    jobtooutputlog={cmdstr:os.getcwd()+r'/'+outputname}
+                    jobtolog={cmdstr:os.getcwd()+r'/'+poltype.logfname}
+                    scratchdir=poltype.scrtmpdirpsi4
+                    jobtologlistfilenameprefix=os.getcwd()+r'/'+'esp_jobtolog_'+poltype.molecprefix 
+                    inputfilepath=os.path.join(os.getcwd(),inputname)
+                    anotherinputfile=os.path.join(os.getcwd(),'grid.dat')
+                    jobtoinputfilepaths={cmdstr:[inputfilepath,anotherinputfile]}
+                    jobtooutputfiles={cmdstr:[outputname,fckespfname,'grid_esp.dat']}
+                    jobtoabsolutebinpath={cmdstr:poltype.which('psi4')}
 
 
-                finishedjobs,errorjobs=poltype.CallJobsSeriallyLocalHost(jobtooutputlog,False,wait=True)
+                    finishedjobs,errorjobs=poltype.CallJobsSeriallyLocalHost(jobtooutputlog,False,wait=True)
 
-                term,error=poltype.CheckNormalTermination(outputname)
-                if error:
-                    poltype.RaiseOutputFileError(outputname)
+                    term,error=poltype.CheckNormalTermination(outputname)
+                    if error:
+                        poltype.RaiseOutputFileError(outputname)
                  
-                shutil.copy('grid_esp.dat',espname) 
+                    shutil.copy('grid_esp.dat',espname) 
 
 
-        else:
-            term,error=poltype.CheckNormalTermination(logespfname,errormessages=None,skiperrors=True)
-            if poltype.espfit and not term:
-                poltype.WriteToLog("Gas Phase High Level Single Point for Multipole Refinement")
-                gen_comfile(poltype,comespfname,poltype.numproc,poltype.maxmem,poltype.maxdisk,chkespfname,poltype.comtmp,optmol)
-                cmdstr = poltype.gausexe + " " + comespfname
-                if poltype.sameleveldmaesp:
-                  comdmafname = comespfname.replace('-esp', '-dma')
-                  logdmafname = logespfname.replace('-esp', '-dma')
-                  fckdmafname = fckespfname.replace('-esp', '-dma')
-                  chkdmafname = chkespfname.replace('-esp', '-dma')
-                  cmdstr = f"ln -sf {comdmafname}  {comespfname}; ln -sf {logdmafname}  {logespfname}; ln -sf {fckdmafname} {fckespfname}; ln -sf {chkdmafname} {chkespfname}"
-                jobtooutputlog={cmdstr:os.getcwd()+r'/'+logespfname}
-                jobtolog={cmdstr:os.getcwd()+r'/'+poltype.logfname}
-                scratchdir=poltype.scrtmpdirgau
-                jobtologlistfilenameprefix=os.getcwd()+r'/'+'esp_jobtolog_'+poltype.molecprefix
-                inputfilepath=os.path.join(os.getcwd(),comespfname)
-                jobtoinputfilepaths={cmdstr:[inputfilepath]}
-                jobtooutputfiles={cmdstr:[logespfname,chkespfname]}
-                jobtoabsolutebinpath={cmdstr:poltype.which(poltype.gausexe)}
+            else:
+                term,error=poltype.CheckNormalTermination(logespfname,errormessages=None,skiperrors=True)
+                if poltype.espfit and not term:
+                    poltype.WriteToLog("Gas Phase High Level Single Point for Multipole Refinement")
+                    gen_comfile(poltype,comespfname,poltype.numproc,poltype.maxmem,poltype.maxdisk,chkespfname,poltype.comtmp,optmol)
+                    cmdstr = poltype.gausexe + " " + comespfname
+                    if poltype.sameleveldmaesp and i==0:
+                      comdmafname = comespfname.replace('-esp', '-dma')
+                      logdmafname = logespfname.replace('-esp', '-dma')
+                      fckdmafname = fckespfname.replace('-esp', '-dma')
+                      chkdmafname = chkespfname.replace('-esp', '-dma')
+                      cmdstr = f"ln -sf {comdmafname}  {comespfname}; ln -sf {logdmafname}  {logespfname}; ln -sf {fckdmafname} {fckespfname}; ln -sf {chkdmafname} {chkespfname}"
+                    jobtooutputlog={cmdstr:os.getcwd()+r'/'+logespfname}
+                    jobtolog={cmdstr:os.getcwd()+r'/'+poltype.logfname}
+                    scratchdir=poltype.scrtmpdirgau
+                    jobtologlistfilenameprefix=os.getcwd()+r'/'+'esp_jobtolog_'+poltype.molecprefix
+                    inputfilepath=os.path.join(os.getcwd(),comespfname)
+                    jobtoinputfilepaths={cmdstr:[inputfilepath]}
+                    jobtooutputfiles={cmdstr:[logespfname,chkespfname]}
+                    jobtoabsolutebinpath={cmdstr:poltype.which(poltype.gausexe)}
 
 
-                finishedjobs,errorjobs=poltype.CallJobsSeriallyLocalHost(jobtooutputlog,False,wait=True)
+                    finishedjobs,errorjobs=poltype.CallJobsSeriallyLocalHost(jobtooutputlog,False,wait=True)
 
-                cmdstr = poltype.formchkexe + " " + chkespfname
-                poltype.call_subsystem([cmdstr],True)
-                term,error=poltype.CheckNormalTermination(logespfname)
-                if error:
-                    poltype.RaiseOutputFileError(logespfname)
+                    cmdstr = poltype.formchkexe + " " + chkespfname
+                    poltype.call_subsystem([cmdstr],True)
+                    term,error=poltype.CheckNormalTermination(logespfname)
+                    if error:
+                        poltype.RaiseOutputFileError(logespfname)
+        except Exception:
+            if not (i>0 and poltype.skipfailedespconfs):
+                raise
+            poltype.WriteToLog('WARNING: ESP single point failed for ESP conformer '+str(i+1)+', dropping it from the ESP fit')
+            optmolist[i]=None
+            for namelist in namelists:
+                del namelist[i:]
+                namelist.append(None)
 
     sys.stdout.flush()
     return gridnamelist,espnamelist,fchknamelist,cubenamelist

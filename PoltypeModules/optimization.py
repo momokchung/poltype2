@@ -33,6 +33,14 @@ def GeometryOPTWrapper(poltype,molist):
         try:
             optmol,error,torsionrestraints = GeometryOptimization(poltype,mol,totcharge,suffix=suf)
         except:
+            # extra ESP conformers (espextraconflist) can be dropped, the first conformer is needed for DMA
+            if molidx>0 and poltype.skipfailedespconfs and isinstance(sys.exc_info()[1],Exception):
+                if redo==False: # after a redo the lists are already complete
+                    poltype.WriteToLog('WARNING: QM geometry optimization failed for ESP conformer '+suf+', dropping it from the ESP fit')
+                    optmolist.append(None)
+                    errorlist.append(True)
+                    torsionrestraintslist.append([])
+                continue
             redo=False
             if poltype.pcm==True:
                  # Gaussian would have been used first if was detected. 

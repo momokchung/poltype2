@@ -415,11 +415,14 @@ Convergence-gradient setting passed to the Tinker `potential` executable during 
 #### `espextraconflist`
 Comma-separated list of extra conformer files (SDF or equivalent, same atom order) to add to the ESP fit. Default: empty.
 
+#### `skipfailedespconfs`
+Drop an `espextraconflist` conformer from the ESP fit, with a warning in the log, if its QM optimization or ESP single point fails or its bonds change during optimization, instead of stopping the run. A failure of the primary conformer still stops the run. Default: `False`.
+
 #### `numespconfs`
 Vestigial — assigned in the ini reader and never read elsewhere. The multi-conformer ESP-fitting path appears to have been replaced by `espextraconflist`. Default: `1`.
 
 #### `sameleveldmaesp`
-Run QM only once for DMA and reuse the wavefunction for ESP. Default: `False`.
+Run QM only once for DMA and reuse the wavefunction for ESP. Turned on automatically when `dmamethod`/`dmabasisset` equal `espmethod`/`espbasisset`. The reuse applies to the primary conformer only; `espextraconflist` conformers always get their own ESP single point. Default: `False`.
 
 #### `adaptiveespbasisset`
 Downgrade `aug-cc-pVTZ` to `aug-cc-pVDZ` when the molecule has ≥20 heavy atoms. Default: `False`.

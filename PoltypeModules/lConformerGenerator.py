@@ -88,16 +88,42 @@ def get_pairAtoms(mol):
         pair_15beyond.append([n, m])
   return pair_15beyond
 
-# change to 2.5 so this is consistent with HB definition above
-def no_close_contact(conf, atom_pairs, threshold=2.5):
+# a pair is in close contact when it is closer than scale x (sum of vdW radii)
+# a flat 2.5 A cutoff flags nearly every conformer since 1-5 H...H pairs are normally 2.0-2.5 A
+def no_close_contact(conf, atom_pairs, radii, scale=0.75):
   res = True
   for pair in atom_pairs:
     i, j = pair
     dist = (conf.GetAtomPosition(i)- conf.GetAtomPosition(j)).Length()
-    if dist < threshold:
+    if dist < scale*(radii[i] + radii[j]):
       res = False
       break
   return res
+
+def select_extended_conformer(num_ihbs, rgs, sasas, no_steric):
+  ## 1. find the conformers with the fewest HB
+  min_num_ihb = min(num_ihbs)
+  num_ihbs_deg_idx = []
+  for i in range(len(num_ihbs)):
+    if num_ihbs[i] == min_num_ihb:
+      num_ihbs_deg_idx.append(i)
+
+  # 2. keep top 50% of 1. based on Rg (as conformer indices)
+  fifty_per = int(0.5*len(num_ihbs_deg_idx))
+  if fifty_per < 1:
+    fifty_per = 1
+  rgs_sel = [rgs[idx] for idx in num_ihbs_deg_idx]
+  top_fifty_per = [num_ihbs_deg_idx[i] for i in np.argsort(rgs_sel)[-fifty_per:]]
+
+  # 3. filter out conformers with steric interactions
+  candidates = [idx for idx in top_fifty_per if no_steric[idx]]
+  if candidates == []:
+    print('WARNING: all extended conformers have close contacts, steric filter is not applied')
+    candidates = top_fifty_per
+
+  # 4. use the one with the highest SASA
+  extended_conf = max(candidates, key=lambda idx: sasas[idx])
+  return extended_conf
 
 if __name__ == "__main__":
  
@@ -285,7 +311,7 @@ if __name__ == "__main__":
     ihb = range(999)
     sasa = 0.0
     conf = m1.GetConformer(i)
-    no_steric.append(no_close_contact(conf, pair_15beyond))
+    no_steric.append(no_close_contact(conf, pair_15beyond, radii))
     if converged[i] == 0:
       rg = Descriptors3D.RadiusOfGyration(m1, confId=i)
       ihb = find_intramolecular_hbonds(m1, confId=i)
@@ -294,34 +320,8 @@ if __name__ == "__main__":
     sasas.append(sasa)
     num_ihbs.append(len(ihb))
 
-  ## 1. find the conformers with the fewest HB
-  min_num_ihb = min(num_ihbs)
-  num_ihbs_deg_idx = []
-  for i in range(len(num_ihbs)):
-    if num_ihbs[i] == min_num_ihb:
-      num_ihbs_deg_idx.append(i)
-  
-  # 2. keep top 50% of 1. based on Rg
-  fifty_per = int(0.5*len(num_ihbs_deg_idx))
-  if fifty_per < 1:
-    fifty_per = 1
-  rgs_sel = [rgs[idx] for idx in num_ihbs_deg_idx] 
-  top_fifty_per = list(np.argsort(rgs_sel)[-fifty_per:])
-
-  # 3. filter out conformers with steric interactions
-  for idx in top_fifty_per:
-    if not no_steric[idx]:
-      top_fifty_per.remove(idx)
-  
-  # 4. use the one with the highest SASA 
-  highest_sasa = 0.0
-  extended_conf = -1
-  for i in top_fifty_per:
-    idx = num_ihbs_deg_idx[i]
-    sasa = sasas[idx]  
-    if sasa > highest_sasa:
-      highest_sasa = sasa
-      extended_conf = idx
+  # 1.-4. fewest HB, top 50% Rg, no steric interactions, highest SASA
+  extended_conf = select_extended_conformer(num_ihbs, rgs, sasas, no_steric)
   
   # 5. optimize the geometry with xtb
   extended_conformer = m1.GetConformer(extended_conf)

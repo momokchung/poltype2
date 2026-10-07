@@ -296,6 +296,7 @@ class PolarizableTyper():
         sleeptime:float=.1
         structure:None=None
         espextraconflist:list=field(default_factory=lambda : [])
+        skipfailedespconfs:bool=False
         userconformation:bool=False
         userxyzgeometry:str=''
         def __post_init__(self): 
@@ -437,6 +438,8 @@ class PolarizableTyper():
                         elif 'espextraconflist' in newline:
                             self.espextraconflist=a.split(',')
                             self.espextraconflist=[i.strip() for i in self.espextraconflist]
+                        elif 'skipfailedespconfs' in newline:
+                            self.skipfailedespconfs=self.SetDefaultBool(line,a,True)
                         elif ("polareps") in newline:
                             self.polareps = a
 
@@ -3324,21 +3327,30 @@ class PolarizableTyper():
                 for omolidx in range(len(optmolist)):
                     bgnmol=molist[omolidx]
                     omol=optmolist[omolidx]
+                    if omol is None: # extra ESP conformer that failed QM optimization
+                        continue
                     bondtopoopt=torgen.GenerateBondTopology(self,omol)
                     bondtopoopt=[list(i) for i in bondtopoopt]
                     bondtopo=torgen.GenerateBondTopology(self,bgnmol)
                     bondtopo=[list(i) for i in bondtopo]
-                    for bond in bondtopo:
-                        if bond in bondtopoopt or bond[::-1] in bondtopoopt:
-                            pass
-                        else:
-                            raise ValueError('Bond does not exist after optimization !'+str(bond))
+                    try:
+                        for bond in bondtopo:
+                            if bond in bondtopoopt or bond[::-1] in bondtopoopt:
+                                pass
+                            else:
+                                raise ValueError('Bond does not exist after optimization !'+str(bond))
 
-                    for bond in bondtopoopt:
-                        if bond in bondtopo or bond[::-1] in bondtopo:
-                            pass
+                        for bond in bondtopoopt:
+                            if bond in bondtopo or bond[::-1] in bondtopo:
+                                pass
+                            else:
+                                raise ValueError('Bond created after optimization !'+str(bond))
+                    except ValueError as e:
+                        if omolidx>0 and self.skipfailedespconfs:
+                            self.WriteToLog('WARNING: '+str(e)+' for ESP conformer '+str(omolidx+1)+', dropping it from the ESP fit')
+                            optmolist[omolidx]=None
                         else:
-                            raise ValueError('Bond created after optimization !'+str(bond))
+                            raise
 
 
                     
@@ -3807,6 +3819,10 @@ class PolarizableTyper():
             # STEP 1
             for optmolidx in range(len(optmolist)):
                 optmol=optmolist[optmolidx]
+                if optmol is None: # dropped ESP conformer, keep position so file suffixes stay the same
+                    xyzfnamelist.append(None)
+                    keyfnamelist.append(None)
+                    continue
                 # STEP 2
                 indextocoordinates=self.GrabIndexToCoordinates(optmol)
                 # STEP 3
